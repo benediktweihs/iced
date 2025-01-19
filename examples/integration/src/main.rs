@@ -4,9 +4,10 @@ mod scene;
 use controls::Controls;
 use scene::Scene;
 
+use iced_runtime::Action;
 use iced_wgpu::graphics::Viewport;
 use iced_wgpu::{wgpu, Engine, Renderer};
-use iced_winit::conversion;
+use iced_winit::{conversion, Proxy};
 use iced_winit::core::mouse;
 use iced_winit::core::renderer;
 use iced_winit::core::{Color, Font, Pixels, Size, Theme};
@@ -23,16 +24,22 @@ use winit::{
 };
 
 use std::sync::Arc;
+use iced_runtime::task::into_stream;
+use iced_winit::winit::event_loop::{ActiveEventLoop, EventLoopProxy};
+use crate::controls::Message;
 
 pub fn main() -> Result<(), winit::error::EventLoopError> {
     tracing_subscriber::fmt::init();
 
     // Initialize winit
-    let event_loop = EventLoop::new()?;
+    let event_loop = EventLoop::<Action<Message>>::with_user_event()
+        .build()
+        .unwrap();
+    let proxy: EventLoopProxy<Action<Message>> = event_loop.create_proxy();
 
     #[allow(clippy::large_enum_variant)]
     enum Runner {
-        Loading,
+        Loading(EventLoopProxy<Action<Message>>),
         Ready {
             window: Arc<winit::window::Window>,
             device: wgpu::Device,
@@ -45,6 +52,11 @@ pub fn main() -> Result<(), winit::error::EventLoopError> {
             state: program::State<Controls>,
             cursor_position: Option<winit::dpi::PhysicalPosition<f64>>,
             clipboard: Clipboard,
+            runtime: iced_futures::Runtime<
+                iced_futures::backend::native::tokio::Executor,
+                Proxy<Message>,
+                Action<Message>,
+            >,
             viewport: Viewport,
             modifiers: ModifiersState,
             resized: bool,
@@ -52,9 +64,9 @@ pub fn main() -> Result<(), winit::error::EventLoopError> {
         },
     }
 
-    impl winit::application::ApplicationHandler for Runner {
+    impl winit::application::ApplicationHandler<Action<Message>> for Runner {
         fn resumed(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
-            if let Self::Loading = self {
+            if let Self::Loading(proxy) = self {
                 let window = Arc::new(
                     event_loop
                         .create_window(
@@ -80,6 +92,7 @@ pub fn main() -> Result<(), winit::error::EventLoopError> {
                 let surface = instance
                     .create_surface(window.clone())
                     .expect("Create window surface");
+
 
                 let (format, adapter, device, queue) =
                     futures::futures::executor::block_on(async {
@@ -165,6 +178,14 @@ pub fn main() -> Result<(), winit::error::EventLoopError> {
                 // You should change this if you want to render continuously
                 event_loop.set_control_flow(ControlFlow::Wait);
 
+                let (p, worker) = iced_winit::Proxy::new(proxy.clone());
+                let Ok(executor) = iced_futures::backend::native::tokio::Executor::new() else {
+                    panic!("could not create runtime")
+                };
+
+                executor.spawn(worker);
+                let mut runtime = iced_futures::Runtime::new(executor, p);
+
                 *self = Self::Ready {
                     window,
                     device,
@@ -178,6 +199,7 @@ pub fn main() -> Result<(), winit::error::EventLoopError> {
                     cursor_position: None,
                     modifiers: ModifiersState::default(),
                     clipboard,
+                    runtime,
                     viewport,
                     resized: false,
                     debug,
@@ -201,6 +223,7 @@ pub fn main() -> Result<(), winit::error::EventLoopError> {
                 renderer,
                 scene,
                 state,
+                runtime,
                 viewport,
                 cursor_position,
                 modifiers,
@@ -328,7 +351,7 @@ pub fn main() -> Result<(), winit::error::EventLoopError> {
             // If there are events pending
             if !state.is_queue_empty() {
                 // We update iced
-                let _ = state.update(
+                let (_, task) = state.update(
                     viewport.logical_size(),
                     cursor_position
                         .map(|p| {
@@ -348,12 +371,48 @@ pub fn main() -> Result<(), winit::error::EventLoopError> {
                     debug,
                 );
 
+                let _ = 'runtime_call: {
+                    let Some(t) = task else {
+                        break 'runtime_call 1;
+                    };
+                    let Some(stream) = into_stream(t) else {
+                        break 'runtime_call 1;
+                    };
+
+                    runtime.run(stream);
+                    0
+                };
+
                 // and request a redraw
                 window.request_redraw();
             }
         }
+
+        fn user_event(&mut self, event_loop: &ActiveEventLoop, event: Action<Message>) {
+            let Self::Ready {
+                ref mut renderer,
+                state,
+                viewport,
+                ref mut debug, ..
+            } = self
+            else {
+                return;
+            };
+
+            match event {
+                Action::Widget(w) => {
+                    state.operate(
+                        renderer,
+                        std::iter::once(w),
+                        Size::new(viewport.physical_size().width as f32, viewport.physical_size().height as f32),
+                        debug,
+                    );
+                }
+                _ => {}
+            }
+        }
     }
 
-    let mut runner = Runner::Loading;
+    let mut runner = Runner::Loading(proxy);
     event_loop.run_app(&mut runner)
 }
