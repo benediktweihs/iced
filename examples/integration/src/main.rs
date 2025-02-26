@@ -350,6 +350,10 @@ pub fn main() -> Result<(), winit::error::EventLoopError> {
 
             // If there are events pending
             if !state.is_queue_empty() {
+                state.queue_event(iced_core::event::Event::Window(
+                    iced_core::window::Event::RedrawRequested(iced_core::time::Instant::now()),
+                ));
+
                 // We update iced
                 let (_, task) = state.update(
                     viewport.logical_size(),

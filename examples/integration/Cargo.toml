@@ -10,6 +10,7 @@ iced_winit.workspace = true
 iced_wgpu.workspace = true
 iced_runtime.workspace = true
 iced_futures.workspace = true
+iced_core.workspace = true
 
 iced_widget.workspace = true
 iced_widget.features = ["wgpu"]

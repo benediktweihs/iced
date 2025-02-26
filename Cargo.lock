@@ -2776,6 +2776,9 @@ version = "0.1.0"
 dependencies = [
  "console_error_panic_hook",
  "console_log",
+ "iced_core",
+ "iced_futures",
+ "iced_runtime",
  "iced_wgpu",
  "iced_widget",
  "iced_winit",
